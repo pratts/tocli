@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -37,16 +38,10 @@ const shutdownCloseTimeout = 3 * time.Second
 // than a hard kill. It returns once the torrent either completes or is
 // paused.
 func Run(id string) error {
-	// Acquire the per-torrent lock before doing anything else -- before
-	// even loading config.json. If another process (an old child that's
-	// still alive, or a second resume racing this one) already holds it,
-	// there is a real risk of two torrent.Client instances writing into
-	// the same save path concurrently, which the pid/boot_id-based
-	// liveness check alone can't rule out (see ReconcileLiveness). An OS
-	// advisory lock closes that gap: it's released by the kernel the
-	// instant the holder's file descriptors close, for any reason at all,
-	// so "the lock is free" is a direct guarantee rather than an
-	// inference.
+	// Acquire the per-torrent lock before touching anything else: it's what
+	// stops two processes from ever downloading into the same save path
+	// concurrently (see process.AcquireLock for why this, not just the
+	// pid/boot_id check, is what makes that guarantee real).
 	lockPath, err := store.LockPath(id)
 	if err != nil {
 		return fmt.Errorf("resolve lock path: %w", err)
@@ -58,10 +53,8 @@ func Run(id string) error {
 		}
 		return fmt.Errorf("acquire lock for torrent %s: %w", id, err)
 	}
-	// Safety net for any early-return error path below (e.g. a failed
-	// client.AddTorrent) that doesn't reach the explicit release() calls
-	// further down. release is idempotent, so this is harmless on the
-	// normal paths where we've already released explicitly.
+	// Idempotent safety net for any early-return path below that doesn't
+	// reach one of the explicit release() calls further down.
 	defer release()
 
 	tc, err := store.LoadTorrentConfig(id)
@@ -107,7 +100,14 @@ func Run(id string) error {
 	if err != nil {
 		return fmt.Errorf("add torrent: %w", err)
 	}
-	<-t.GotInfo()
+	// Bounded: a magnet whose swarm never turns up the metadata must not
+	// hang this process forever (see MetadataTimeout).
+	infoCtx, cancel := context.WithTimeout(context.Background(), MetadataTimeout)
+	err = waitForInfo(infoCtx, t)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("resolve torrent metadata: %w", err)
+	}
 	t.DownloadAll()
 
 	tc.Status = store.StatusRunning
@@ -152,37 +152,25 @@ func Run(id string) error {
 			if err := store.SaveTorrentConfig(tc); err != nil {
 				return fmt.Errorf("record completed status: %w", err)
 			}
-			// Release right here, at the same point config.json is marked
-			// completed, rather than leaving it to the deferred release
-			// when this function returns a moment later -- callers reading
-			// config.json/the lock state should never see the two disagree.
+			// Released here, not via the deferred release() below: callers
+			// reading config.json and the lock state should never see the
+			// two disagree about whether this torrent is still running.
 			if err := release(); err != nil {
 				log.Printf("release lock: %v", err)
 			}
 			return nil
 
 		case <-sigCh:
-			// SIGTERM is intentionally treated as both "the user ran
-			// `tocli pause`" and "the system is shutting down" (e.g.
-			// systemd/launchd send SIGTERM to processes before a reboot,
-			// with a grace period before SIGKILL). The two are
-			// indistinguishable to this process, and that's fine: the
-			// correct response is identical either way -- stop cleanly,
-			// record "paused" so `resume` picks it back up later, and exit
-			// promptly rather than risk a hard SIGKILL mid-cleanup that
-			// would leave config.json/state.json stuck on "running".
-			//
-			// anacrolix/torrent has no pause primitive, so "pause" means
-			// closing the client (which stops all network activity and
-			// releases the data directory cleanly) and exiting. Resume
-			// just respawns this same process against the same cached
-			// metainfo and save path; the library re-verifies pieces
-			// already on disk against their hashes on the next start,
-			// which is expected and cheap relative to re-downloading them.
-			// Piece data itself is never at risk here regardless of how
-			// this process ends: anacrolix/torrent writes each piece to
-			// the data directory as soon as it's downloaded and hash
-			// -verified, independent of a clean client shutdown.
+			// SIGTERM means "pause" whether it came from `tocli pause` or
+			// the system shutting down -- the two are indistinguishable
+			// here, and the correct response is the same either way: stop
+			// cleanly and exit promptly, since a slow shutdown risks a hard
+			// SIGKILL that leaves config.json/state.json stuck on
+			// "running". anacrolix/torrent has no pause primitive, so
+			// "pause" is closing the client; resume just respawns against
+			// the same cached metainfo, and already-downloaded pieces are
+			// safe regardless (they're written to disk as soon as they're
+			// verified, independent of a clean shutdown).
 			closeClientWithTimeout(client, shutdownCloseTimeout)
 			writeState()
 			tc.Status = store.StatusPaused
@@ -190,10 +178,7 @@ func Run(id string) error {
 			if err := store.SaveTorrentConfig(tc); err != nil {
 				return fmt.Errorf("record paused status: %w", err)
 			}
-			// Same reasoning as the downloadDone case: release right here,
-			// at the point config.json is marked paused, not slightly
-			// after via the deferred release.
-			if err := release(); err != nil {
+			if err := release(); err != nil { // see downloadDone case above
 				log.Printf("release lock: %v", err)
 			}
 			return nil
@@ -201,23 +186,14 @@ func Run(id string) error {
 	}
 }
 
-// recordLockFailure is called when this process couldn't acquire the
-// per-torrent lock -- meaning another process is (or, anomalously, still
-// appears to be) running it. It must never clobber the bookkeeping of a
-// legitimately running instance: if the on-disk config already says
-// "running", the lock is correctly held by that healthy instance and this
-// failing attempt leaves config.json untouched (its failure is still
-// visible via this process's non-zero exit, logged to log.txt). Only when
-// our own bookkeeping didn't expect anyone to be running -- yet the lock
-// says otherwise -- do we write a distinct error status, since that's a
-// genuinely confusing situation the user needs visibility into (otherwise
-// `resume` appears to silently do nothing).
+// recordLockFailure runs when this process couldn't acquire the per-torrent
+// lock. If config.json already says "running", that's a legitimate holder
+// and it's left untouched; otherwise this is unexpected, so it's recorded
+// as a distinct error status rather than left silent (otherwise `resume`
+// would appear to do nothing).
 func recordLockFailure(id string, lockErr error) error {
 	tc, err := store.LoadTorrentConfig(id)
 	if err != nil {
-		// Can't safely say anything about a config we can't even load; the
-		// failure is still visible in log.txt via the caller's returned
-		// error.
 		return fmt.Errorf("load torrent config to record lock failure: %w", err)
 	}
 	if tc.Status == store.StatusRunning {
@@ -226,29 +202,24 @@ func recordLockFailure(id string, lockErr error) error {
 
 	tc.Status = store.StatusError
 	tc.Message = fmt.Sprintf("failed to start: %v", lockErr)
-	// Deliberately not touching tc.PID: whatever holds the lock isn't
-	// necessarily even known to us here, so there's nothing accurate to
-	// record, and leaving it as-is avoids fabricating a pid.
+	// tc.PID is deliberately left as-is: whatever holds the lock isn't
+	// necessarily known here, so there's nothing accurate to record.
 	return store.SaveTorrentConfig(tc)
 }
 
-// closeClientWithTimeout closes client but doesn't wait indefinitely for
-// it: if Close() hasn't returned within timeout, we give up waiting and let
-// the caller move on to persisting status itself, so a slow or hung
-// Close() can't turn into a hard SIGKILL that leaves config.json/state.json
-// stuck on "running". The close still completes in the background even if
-// we stop waiting on it; that's harmless since this process is about to
-// exit either way.
+// closeClientWithTimeout closes client without waiting indefinitely: a slow
+// or hung Close() shouldn't turn into a hard SIGKILL that leaves
+// config.json/state.json stuck on "running". The close still completes in
+// the background if we stop waiting on it; harmless since this process is
+// about to exit either way.
 func closeClientWithTimeout(client *torrent.Client, timeout time.Duration) {
 	runWithTimeout(timeout, func() { client.Close() })
 }
 
-// runWithTimeout runs fn in a goroutine and waits up to timeout for it to
-// finish. If it doesn't finish in time, runWithTimeout gives up waiting
-// (logging that it did) rather than blocking the caller indefinitely; fn
-// keeps running in its goroutine regardless. Split out from
-// closeClientWithTimeout so the timeout behavior itself is testable without
-// a real torrent.Client.
+// runWithTimeout runs fn in a goroutine and waits up to timeout for it,
+// giving up (but not cancelling fn) if it takes longer. Split out from
+// closeClientWithTimeout so this behavior is testable without a real
+// torrent.Client.
 func runWithTimeout(timeout time.Duration, fn func()) {
 	done := make(chan struct{})
 	go func() {

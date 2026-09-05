@@ -12,6 +12,7 @@
 package addflow
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -57,6 +58,12 @@ type Model struct {
 	session *engine.PreviewSession // live only during stagePreview/stageStarting
 	err     error
 
+	// cancelPreview aborts an in-flight engine.OpenPreview call. Set only
+	// while stage == stageLoading; calling it lets Esc abandon a slow
+	// resolution immediately instead of leaking the torrent.Client for the
+	// rest of engine.MetadataTimeout.
+	cancelPreview context.CancelFunc
+
 	// Preview stage: viewport holds the pre-rendered file tree (static once
 	// the preview is entered); name/totalSize/trackers are likewise fixed
 	// at that point. Live peer/seeder stats are read fresh from m.session
@@ -92,9 +99,26 @@ func New(source string, globalCfg config.Config) Model {
 
 func (m Model) Init() tea.Cmd {
 	if m.stage == stageLoading {
-		return tea.Batch(m.spinner.Tick, openPreviewCmd(m.source))
+		// Init can only return a tea.Cmd, not an updated model, so it can't
+		// itself store the cancel func startLoading creates. Route through
+		// a message instead: updateLoading's beginLoadingMsg case runs
+		// startLoading from inside Update, where the returned model (with
+		// cancelPreview set) actually persists.
+		return func() tea.Msg { return beginLoadingMsg{} }
 	}
 	return textinput.Blink
+}
+
+// startLoading transitions into the loading stage and kicks off metadata
+// resolution for source, bounded by engine.MetadataTimeout and cancellable
+// early via cancelPreview (see the Esc handling in updateLoading).
+func (m Model) startLoading(source string) (Model, tea.Cmd) {
+	m.source = source
+	m.stage = stageLoading
+	m.spinner = newSpinner()
+	ctx, cancel := context.WithTimeout(context.Background(), engine.MetadataTimeout)
+	m.cancelPreview = cancel
+	return m, tea.Batch(m.spinner.Tick, openPreviewCmd(ctx, source))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -140,12 +164,26 @@ func (m Model) View() string {
 	return ""
 }
 
-// closeSession releases the preview session, if one is open. Safe to call
-// more than once or when none is open.
+// closeSession cancels any in-flight metadata resolution and releases the
+// preview session, if either is active. Safe to call more than once or
+// when neither is active.
 func (m *Model) closeSession() {
+	m.stopWaitingForMetadata()
 	if m.session != nil {
 		_ = m.session.Close()
 		m.session = nil
+	}
+}
+
+// stopWaitingForMetadata cancels an in-flight engine.OpenPreview call, if
+// one is active. Called both when abandoning it early (Esc during loading)
+// and when it's already concluded (success or failure), so its underlying
+// timer is released promptly rather than sitting armed until
+// engine.MetadataTimeout naturally elapses.
+func (m *Model) stopWaitingForMetadata() {
+	if m.cancelPreview != nil {
+		m.cancelPreview()
+		m.cancelPreview = nil
 	}
 }
 
@@ -164,6 +202,10 @@ func newSpinner() spinner.Model {
 	return s
 }
 
+// beginLoadingMsg kicks off metadata resolution from Init (see Init's
+// comment for why it can't just call startLoading directly).
+type beginLoadingMsg struct{}
+
 // previewReadyMsg/previewErrMsg are delivered once openPreviewCmd's
 // goroutine finishes.
 type previewReadyMsg struct{ session *engine.PreviewSession }
@@ -177,10 +219,11 @@ type startErrMsg struct {
 
 // openPreviewCmd resolves source's metadata via engine.OpenPreview,
 // running on its own goroutine (per bubbletea convention) so the spinner
-// keeps animating instead of the UI blocking on network I/O.
-func openPreviewCmd(source string) tea.Cmd {
+// keeps animating instead of the UI blocking on network I/O. ctx bounds
+// (and can cancel) the wait; see startLoading.
+func openPreviewCmd(ctx context.Context, source string) tea.Cmd {
 	return func() tea.Msg {
-		session, err := engine.OpenPreview(source)
+		session, err := engine.OpenPreview(ctx, source)
 		if err != nil {
 			return previewErrMsg{err}
 		}

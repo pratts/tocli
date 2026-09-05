@@ -11,7 +11,11 @@ import (
 
 func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case beginLoadingMsg:
+		return m.startLoading(m.source)
+
 	case previewReadyMsg:
+		m.stopWaitingForMetadata()
 		m.session = msg.session
 		m.name = displayName(m.session)
 		m.totalSize = m.session.Info.TotalLength()
@@ -22,12 +26,17 @@ func (m Model) updateLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickStatsCmd()
 
 	case previewErrMsg:
+		m.stopWaitingForMetadata()
 		m.err = msg.err
 		m.stage = stageError
 		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "esc" {
+			// Abandon the in-flight resolution right now rather than
+			// leaving it running for up to engine.MetadataTimeout: OpenPreview
+			// closes its own torrent.Client as soon as ctx is cancelled.
+			m.closeSession()
 			m.Cancelled = true
 			return m, tea.Quit
 		}

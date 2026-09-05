@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -42,10 +43,13 @@ type PreviewSession struct {
 // OpenPreview creates a client rooted at a scratch directory (nothing
 // downloaded during a preview should land in a real save path before the
 // user has confirmed anything) and adds source (a local .torrent file or a
-// magnet link), waiting for its info to resolve. The returned session
-// stays alive for the caller to poll live stats from via Stats, and must
-// be closed exactly once via Close.
-func OpenPreview(source string) (*PreviewSession, error) {
+// magnet link), waiting for its info to resolve or ctx to end, whichever
+// happens first -- e.g. a cancellable context so the caller can abandon a
+// slow resolution the moment the user asks to (pressing Esc), rather than
+// leaking the client for as long as a fixed timeout takes to expire. The
+// returned session stays alive for the caller to poll live stats from via
+// Stats, and must be closed exactly once via Close.
+func OpenPreview(ctx context.Context, source string) (*PreviewSession, error) {
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = os.TempDir()
 	client, err := torrent.NewClient(cfg)
@@ -73,7 +77,10 @@ func OpenPreview(source string) (*PreviewSession, error) {
 		}
 	}
 
-	<-t.GotInfo()
+	if err := waitForInfo(ctx, t); err != nil {
+		client.Close()
+		return nil, err
+	}
 
 	return &PreviewSession{Client: client, Torrent: t, Info: *t.Info()}, nil
 }

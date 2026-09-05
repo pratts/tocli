@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -73,7 +74,9 @@ func runStartDirect(cmd *cobra.Command, source string, autoConfirm bool) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	mi, err := engine.ResolveMetainfo(source, out)
+	ctx, cancel := context.WithTimeout(context.Background(), engine.MetadataTimeout)
+	defer cancel()
+	mi, err := engine.ResolveMetainfo(ctx, source, out)
 	if err != nil {
 		return fmt.Errorf("resolve torrent metadata: %w", err)
 	}

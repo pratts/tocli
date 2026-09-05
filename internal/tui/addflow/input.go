@@ -20,10 +20,7 @@ func (m Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if source == "" {
 				return m, nil
 			}
-			m.source = source
-			m.stage = stageLoading
-			m.spinner = newSpinner()
-			return m, tea.Batch(m.spinner.Tick, openPreviewCmd(source))
+			return m.startLoading(source)
 		}
 	}
 
