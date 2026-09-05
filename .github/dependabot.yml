@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Go module dependencies (anacrolix/torrent, the charmbracelet stack,
+  # cobra, etc.) -- opens a PR per outdated direct dependency, which CI
+  # then builds/vets/tests against like any other PR.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # Pinned action versions in .github/workflows (actions/checkout,
+  # actions/setup-go, softprops/action-gh-release, ...) -- these run with
+  # repo permissions during CI/release, so keeping them current matters
+  # too, not just the Go dependencies.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
