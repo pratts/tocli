@@ -42,8 +42,16 @@ func TorrentsDir() (string, error) {
 	return TorrentsDirFrom(root), nil
 }
 
-// TorrentDir returns ~/.tocli/torrents/<id>.
+// TorrentDir returns ~/.tocli/torrents/<id>. This is the single choke point
+// every other per-torrent path helper (ConfigPath, StatePath, MetainfoPath,
+// LockPath, LogPath) goes through, so validating id here -- rejecting
+// anything that isn't a well-formed id, e.g. containing ".." -- protects
+// all of them at once against a malformed or malicious id being used to
+// escape ~/.tocli/torrents.
 func TorrentDir(id string) (string, error) {
+	if err := ValidateID(id); err != nil {
+		return "", err
+	}
 	dir, err := TorrentsDir()
 	if err != nil {
 		return "", err

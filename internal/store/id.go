@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -12,6 +14,27 @@ import (
 // collisions across the handful of torrents a single user tracks, while
 // staying short enough to type on the command line.
 const idLength = 10
+
+// validID matches a well-formed id: letters and digits only, 1-32 of them.
+// This is deliberately looser than "exactly idLength lowercase hex chars"
+// (which is all DeriveID ever produces) so it doesn't need to change if the
+// derivation scheme ever does -- what actually matters here is defensive,
+// not descriptive: no "/", "\", ".", or other characters that could turn an
+// id into a path traversal once it's joined into a filesystem path.
+var validID = regexp.MustCompile(`^[a-zA-Z0-9]{1,32}$`)
+
+// ValidateID reports an error if id isn't safe to use as a filesystem path
+// component. Every function that turns an id into a path under
+// ~/.tocli/torrents (TorrentDir and everything built on it) calls this
+// first: id ultimately comes from a CLI argument (`tocli pause <id>`,
+// `tocli __run <id>`), and without this check a value like "../../etc"
+// would let path/filepath.Join walk straight out of ~/.tocli/torrents.
+func ValidateID(id string) error {
+	if !validID.MatchString(id) {
+		return fmt.Errorf("invalid torrent id %q", id)
+	}
+	return nil
+}
 
 // DeriveID returns a short, stable identifier for a torrent, derived from
 // its info hash. Deriving from the hash (rather than, say, a counter or
