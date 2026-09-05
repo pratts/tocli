@@ -7,11 +7,14 @@ package cli
 
 import "github.com/spf13/cobra"
 
-// NewRootCmd builds the tocli command tree.
-func NewRootCmd() *cobra.Command {
+// NewRootCmd builds the tocli command tree. version is reported by
+// `tocli --version`; pass the build-time version (see cmd/tocli/main.go)
+// or "dev" for local/test builds.
+func NewRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "tocli",
 		Short:         "A process-per-torrent terminal torrent client",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

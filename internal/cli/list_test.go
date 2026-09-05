@@ -52,7 +52,7 @@ func TestList_SelfCorrectsCrashedStatus(t *testing.T) {
 		t.Fatalf("stand-in process %d still alive after kill", pid)
 	}
 
-	root := NewRootCmd()
+	root := NewRootCmd("test")
 	root.SetArgs([]string{"list"})
 	root.SetOut(new(bytes.Buffer))
 	root.SetErr(new(bytes.Buffer))
@@ -89,7 +89,7 @@ func TestPause_AlreadyCrashedReportsCleanly(t *testing.T) {
 	}
 
 	out := new(bytes.Buffer)
-	root := NewRootCmd()
+	root := NewRootCmd("test")
 	root.SetArgs([]string{"pause", id})
 	root.SetOut(out)
 	if err := root.Execute(); err != nil {

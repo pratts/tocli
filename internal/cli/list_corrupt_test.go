@@ -51,7 +51,7 @@ func TestList_CorruptConfigDegradesGracefully(t *testing.T) {
 
 	out := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
-	root := NewRootCmd()
+	root := NewRootCmd("test")
 	root.SetArgs([]string{"list"})
 	root.SetOut(out)
 	root.SetErr(stderr)
