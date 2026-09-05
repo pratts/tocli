@@ -1,0 +1,95 @@
+name: Release
+
+# A single trigger -- pushing a tag matching v* -- covers both ways of
+# cutting a release:
+#   - `git tag v1.2.3 && git push origin v1.2.3` fires it directly.
+#   - Creating (and publishing) a GitHub Release through the UI/CLI also
+#     creates and pushes the underlying tag, which fires this the same way.
+# Listening for both this and the `release: published` event would run the
+# build twice for the latter case, so this is deliberately the only trigger.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # linux and darwin only: internal/process relies on POSIX signals,
+        # flock, and setsid (see its package doc comment), so there is no
+        # Windows build of tocli today.
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o dist/tocli ./cmd/tocli
+
+      - name: Package archive
+        run: |
+          set -euo pipefail
+          cp README.md LICENSE dist/
+          archive="tocli_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          (cd dist && zip -r "../${archive}" .)
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: tocli_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum *.zip > checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.zip
+            artifacts/checksums.txt
+          generate_release_notes: true
