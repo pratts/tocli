@@ -12,30 +12,18 @@ var currentBootID = process.BootID
 // list, pause, and remove all go through this single function before
 // trusting a stored "running" status, so a stale status left behind by an
 // unclean death (kill -9, crash, OOM, machine reboot) gets corrected once,
-// consistently, at the point of detection -- rather than each command
-// re-deriving its own answer and only one of them happening to fix the
-// file on disk.
+// consistently, at the point of detection.
 //
 // tc is mutated in place (Status/PID) when a correction is made, so
 // callers can immediately act on tc.Status after calling this.
 //
-// Relationship to the per-torrent lock (process.AcquireLock, used by
-// internal/engine.Run to prevent double-spawning into the same save path):
-// this is a pid/boot_id *inference*, whereas the lock is a direct kernel
-// guarantee -- it's unconditionally released the instant a process's file
-// descriptors close, for any reason, including the unclean deaths this
-// function is trying to detect indirectly. In other words, by the time
-// ReconcileLiveness could ever observe a dead pid or a boot_id mismatch,
-// that same event has already released the lock too; the two signals are
-// never actually in a position to disagree (confirmed directly by
-// TestLockAndReconcileLiveness_NeverContradict in internal/engine, rather
-// than assumed). Were that premise ever violated -- e.g. an unreliable
-// flock implementation on some network filesystem -- the lock should win,
-// since it's the direct fact rather than the inference. This function does
-// not consult the lock itself: replacing pid/boot_id liveness reporting
-// with lock-based liveness checking is a reasonable future simplification,
-// but out of scope here -- the lock's job today is narrowly to prevent
-// double-spawning, not to replace this status-reporting logic.
+// This is a pid/boot_id *inference*, distinct from the per-torrent advisory
+// lock (process.AcquireLock) that actually prevents double-spawning: the
+// two are verified to never disagree in practice (see
+// TestLockAndReconcileLiveness_NeverContradict in internal/engine), since a
+// dead pid/rebooted machine has already released the lock by the time this
+// could observe either. If that premise were ever violated, the lock would
+// be the one to trust -- it's a kernel guarantee, this is an inference.
 func ReconcileLiveness(tc *TorrentConfig) error {
 	if tc.Status != StatusRunning {
 		return nil
