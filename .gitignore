@@ -8,6 +8,13 @@
 *.so
 *.dylib
 
+# Compiled tocli binary (e.g. `go build -o tocli ./cmd/tocli` or a plain
+# `go build ./cmd/tocli` run from its own directory) -- the generic
+# patterns above only cover Windows/shared-library binaries, not a plain
+# Unix executable, and this one shares its name with the repo.
+/tocli
+/cmd/tocli/tocli
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -30,3 +37,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# macOS
+.DS_Store
