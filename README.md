@@ -13,7 +13,30 @@ tocli list                            # live dashboard on a terminal,
                                        # a static table when piped/scripted
 ```
 
-## Building
+> **Platform support:** macOS and Linux only. `internal/process` relies on
+> POSIX signals, `flock`, and `setsid` for the process-per-torrent design;
+> there is no Windows build.
+
+## Installing
+
+### `go install`
+
+```bash
+go install github.com/pratts/tocli/cmd/tocli@latest
+```
+
+Installs the binary to `$(go env GOPATH)/bin` (make sure that's on your
+`PATH`). Pin a specific version instead of `@latest` with a released tag,
+e.g. `@v1.0.0`.
+
+### Pre-built binaries
+
+Every tag pushed as `vX.Y.Z` is built and published automatically (see
+[Releasing](#releasing) below) — grab the `.zip` for your platform from the
+[Releases page](https://github.com/pratts/tocli/releases), unzip it, and put
+the `tocli` binary on your `PATH`.
+
+## Building from source
 
 Requires the Go version pinned in `go.mod` (currently 1.27) or newer.
 
@@ -135,6 +158,25 @@ writes to `~/.tocli` directly. Every screen calls the exact same
 `ResumeTorrent`, `RemoveTorrent` — that the plain CLI commands call, so
 there's exactly one implementation of what each action does; the two
 layers only differ in when they call it and how they render the result.
+
+## Releasing
+
+Pushing a tag matching `v*` (e.g. `v1.2.3`) triggers
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which
+cross-compiles `tocli` for linux/amd64, linux/arm64, darwin/amd64, and
+darwin/arm64, zips each binary up with the README and license, generates a
+`checksums.txt`, and publishes (or creates, if it doesn't exist yet) a
+GitHub Release with all of them attached:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+Creating a release through the GitHub UI/CLI on a *new* tag name triggers
+the same workflow, since that also pushes the tag. Publishing a release
+against a tag that was already pushed earlier does not re-run the build —
+the tag push is what triggers it.
 
 ## Built with
 
