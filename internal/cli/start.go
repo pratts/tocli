@@ -1,31 +1,71 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"time"
 
-	"github.com/anacrolix/torrent/metainfo"
 	"github.com/spf13/cobra"
 
 	"github.com/pratts/tocli/internal/config"
 	"github.com/pratts/tocli/internal/engine"
 	"github.com/pratts/tocli/internal/humanize"
-	"github.com/pratts/tocli/internal/process"
-	"github.com/pratts/tocli/internal/store"
+	"github.com/pratts/tocli/internal/tui"
+	"github.com/pratts/tocli/internal/tui/addflow"
 )
 
 func newStartCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "start <file-or-magnet>",
+	var tuiFlag bool
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "start [file-or-magnet]",
 		Short: "Resolve a torrent's metadata and start downloading it in the background",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runStart,
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var source string
+			if len(args) == 1 {
+				source = args[0]
+			}
+			return runStart(cmd, source, tuiFlag, yes)
+		},
+	}
+	cmd.Flags().BoolVarP(&tuiFlag, "tui", "i", false, "always show the interactive preview screen")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip confirmation entirely for scripted/non-interactive use")
+	return cmd
+}
+
+// runStart implements the dual-mode trigger rule for `start`:
+//   - --yes always skips confirmation and the TUI outright, for scripted
+//     use; a source is still required (there's nothing to skip a prompt
+//     for otherwise).
+//   - no source given: open the add-flow's input screen if a terminal is
+//     attached (there's nowhere to type into otherwise), else the classic
+//     usage error.
+//   - --tui, or a source given on a real terminal: the interactive preview
+//     (file tree, live peer count, trackers) replaces the old plain Y/N
+//     confirm -- it confirms before downloading either way, just with
+//     richer information.
+//   - a source given but stdout/stdin isn't a terminal (piped, cron,
+//     CI): the plain, scriptable Y/N confirm, unchanged from before the
+//     TUI existed.
+func runStart(cmd *cobra.Command, source string, tuiFlag, yes bool) error {
+	switch {
+	case yes:
+		if source == "" {
+			return fmt.Errorf("a torrent file or magnet link is required with --yes")
+		}
+		return runStartDirect(cmd, source, true)
+	case source == "" && !isInteractiveTerminal():
+		return fmt.Errorf("usage: tocli start <path-to-torrent-file-or-magnet-link>")
+	case source == "", tuiFlag, isInteractiveTerminal():
+		return runStartTUI(cmd, source)
+	default:
+		return runStartDirect(cmd, source, false)
 	}
 }
 
-func runStart(cmd *cobra.Command, args []string) error {
-	source := args[0]
+// runStartDirect is the plain, scriptable path: resolve, print a plain
+// file list, confirm (unless autoConfirm), start.
+func runStartDirect(cmd *cobra.Command, source string, autoConfirm bool) error {
 	out := cmd.OutOrStdout()
 
 	globalCfg, err := config.Load()
@@ -43,116 +83,51 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parse torrent info: %w", err)
 	}
 
-	id := store.DeriveID(mi)
-
-	exists, err := store.Exists(id)
-	if err != nil {
-		return fmt.Errorf("check existing torrent: %w", err)
-	}
-	if exists {
-		existing, err := store.LoadTorrentConfig(id)
-		if err != nil {
-			return fmt.Errorf("load existing torrent config: %w", err)
-		}
-		fmt.Fprintf(out, "torrent %s is already tracked as %q (status: %s); use `tocli resume %s` if it isn't running\n",
-			id, existing.Name, existing.Status, id)
-		return nil
-	}
-
 	fmt.Fprintln(out, "\nFiles in torrent:")
 	for _, f := range engine.ListFiles(info) {
 		fmt.Fprintf(out, "  %s (%s)\n", f.Path, humanize.Bytes(f.Length))
 	}
 	fmt.Fprintf(out, "\nTotal size: %s\n", humanize.Bytes(info.TotalLength()))
 
-	if !confirm("\nStart download? [Y/N]: ") {
+	if !autoConfirm && !confirm("\nStart download? [Y/N]: ") {
 		fmt.Fprintln(out, "aborted")
 		return nil
 	}
 
-	if err := store.InitTorrentDir(id); err != nil {
-		return fmt.Errorf("create torrent directory: %w", err)
-	}
-
-	metainfoPath, err := store.MetainfoPath(id)
+	tc, err := engine.StartTorrent(mi, source, *globalCfg)
 	if err != nil {
-		return err
-	}
-	// Cache the resolved .torrent bytes to disk so pause/resume (and any
-	// future retry) never needs to re-fetch magnet metadata from the swarm.
-	if err := writeMetainfoFile(metainfoPath, mi); err != nil {
-		return fmt.Errorf("cache metainfo: %w", err)
-	}
-
-	savePath := store.DefaultSavePath(globalCfg.BaseDownloadDir, info.BestName(), id)
-	if err := os.MkdirAll(savePath, 0o755); err != nil {
-		return fmt.Errorf("create download directory: %w", err)
-	}
-
-	tc := &store.TorrentConfig{
-		ID:       id,
-		Name:     info.BestName(),
-		InfoHash: mi.HashInfoBytes().HexString(),
-		Source:   source,
-		SavePath: savePath,
-		Status:   store.StatusStopped, // flipped to running by spawnAndTrack once the child is up
-		AddedAt:  time.Now(),
-	}
-	if err := store.SaveTorrentConfig(tc); err != nil {
-		return fmt.Errorf("write torrent config: %w", err)
-	}
-
-	if err := spawnAndTrack(tc); err != nil {
+		if errors.Is(err, engine.ErrAlreadyTracked) {
+			fmt.Fprintf(out, "torrent %s is already tracked as %q (status: %s); use `tocli resume %s` if it isn't running\n",
+				tc.ID, tc.Name, tc.Status, tc.ID)
+			return nil
+		}
 		return err
 	}
 
-	fmt.Fprintf(out, "\nstarted torrent %s (%s), downloading in background\n", id, tc.Name)
+	fmt.Fprintf(out, "\nstarted torrent %s (%s), downloading in background\n", tc.ID, tc.Name)
 	return nil
 }
 
-// spawnAndTrack launches the background `__run` process for tc and records
-// its pid, shared by both `start` and `resume`.
-func spawnAndTrack(tc *store.TorrentConfig) error {
-	exe, err := os.Executable()
+// runStartTUI runs the interactive add-flow. source may be empty, in
+// which case the flow opens on its input screen.
+func runStartTUI(cmd *cobra.Command, source string) error {
+	globalCfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("resolve tocli executable path: %w", err)
-	}
-	logPath, err := store.LogPath(tc.ID)
-	if err != nil {
-		return err
+		return fmt.Errorf("load config: %w", err)
 	}
 
-	pid, err := process.SpawnDetached(exe, []string{"__run", tc.ID}, logPath)
+	final, err := tui.Run(addflow.New(source, *globalCfg))
 	if err != nil {
-		return fmt.Errorf("spawn background process: %w", err)
+		return fmt.Errorf("run interactive add flow: %w", err)
 	}
 
-	bootID, err := process.BootID()
-	if err != nil {
-		// Not fatal: on a platform without boot-id support, liveness
-		// checks just fall back to a plain pid probe (see
-		// store.ReconcileLiveness), which is what we'd have done anyway
-		// before boot-id tracking existed.
-		bootID = ""
+	out := cmd.OutOrStdout()
+	if final.Cancelled {
+		fmt.Fprintln(out, "aborted")
+		return nil
 	}
-
-	tc.PID = pid
-	tc.BootID = bootID
-	tc.Status = store.StatusRunning
-	if err := store.SaveTorrentConfig(tc); err != nil {
-		return fmt.Errorf("record spawned pid: %w", err)
-	}
-	return nil
-}
-
-func writeMetainfoFile(path string, mi *metainfo.MetaInfo) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", path, err)
-	}
-	defer f.Close()
-	if err := mi.Write(f); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	if final.Started {
+		fmt.Fprintf(out, "started torrent %s (%s), downloading in background\n", final.StartedID, final.StartedName)
 	}
 	return nil
 }
