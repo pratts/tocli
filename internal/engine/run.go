@@ -14,6 +14,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/pratts/tocli/internal/config"
+	"github.com/pratts/tocli/internal/portpool"
 	"github.com/pratts/tocli/internal/process"
 	"github.com/pratts/tocli/internal/store"
 )
@@ -78,11 +79,35 @@ func Run(id string) error {
 
 	clientCfg := torrent.NewDefaultClientConfig()
 	clientCfg.DataDir = tc.SavePath
-	if globalCfg.PortRangeStart > 0 {
-		// TODO: once bandwidth scheduling lands, rotate across
-		// [PortRangeStart, PortRangeEnd] instead of pinning the first port.
-		clientCfg.ListenPort = globalCfg.PortRangeStart
+
+	// Claim a distinct port from the configured range so this process's
+	// inbound listener never collides with another concurrently-running
+	// torrent's -- see internal/portpool's package doc for why this needs
+	// filesystem coordination rather than in-memory state.
+	claimedPort, ephemeral, err := portpool.Claim(id, *globalCfg)
+	if err != nil {
+		return fmt.Errorf("claim listen port: %w", err)
 	}
+	switch {
+	case ephemeral:
+		log.Printf("configured port range [%d-%d] exhausted; falling back to an OS-assigned port for this torrent", globalCfg.PortRangeStart, globalCfg.PortRangeEnd)
+	case claimedPort > 0:
+		clientCfg.ListenPort = claimedPort
+		// Deferred right away, not just alongside the graceful-shutdown
+		// paths further down: an early failure below (torrent.NewClient,
+		// AddTorrent, metadata resolution) must not leak the claim either.
+		// Only registered when a claim actually happened (not for the
+		// ephemeral fallback above, and not when no range is configured at
+		// all) -- Release is safe to call unconditionally, but there's no
+		// reason to touch the registry/lock file at all for a torrent that
+		// never claimed anything from it.
+		defer func() {
+			if err := portpool.Release(id); err != nil {
+				log.Printf("release claimed port: %v", err)
+			}
+		}()
+	}
+
 	if globalCfg.MaxDownloadBps > 0 {
 		clientCfg.DownloadRateLimiter = rate.NewLimiter(rate.Limit(globalCfg.MaxDownloadBps), int(globalCfg.MaxDownloadBps))
 	}
