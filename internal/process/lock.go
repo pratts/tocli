@@ -32,13 +32,35 @@ var ErrLockHeld = errors.New("lock already held by another process")
 // still released when the process exits and the kernel closes its fds). On
 // failure, err is non-nil (wrapping ErrLockHeld when contended) and there
 // is nothing to release.
+//
+// Non-blocking is the right fit here because contention on this lock means
+// "another process already owns this specific resource, give up" (e.g. the
+// per-torrent lock in store.LockPath -- see its doc comment) rather than
+// "briefly wait your turn". For the latter case, see AcquireLockBlocking.
 func AcquireLock(path string) (release func() error, err error) {
+	return acquireLock(path, syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+// AcquireLockBlocking takes an exclusive advisory lock (flock) on the file
+// at path, the same as AcquireLock, except it waits for the lock to become
+// available rather than failing immediately if it's currently held.
+//
+// This fits a different kind of contention than AcquireLock's: brief,
+// expected coordination over a shared resource (see internal/portpool's
+// port registry file) where the right response to finding it locked is to
+// wait a moment for the current holder to finish its quick read-modify-
+// write, not to give up.
+func AcquireLockBlocking(path string) (release func() error, err error) {
+	return acquireLock(path, syscall.LOCK_EX)
+}
+
+func acquireLock(path string, flags int) (release func() error, err error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file %s: %w", path, err)
 	}
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(f.Fd()), flags); err != nil {
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("%s: %w", path, ErrLockHeld)
