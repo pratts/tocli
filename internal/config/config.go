@@ -75,7 +75,35 @@ func Load() (*Config, error) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", p, err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", p, err)
+	}
 	return &cfg, nil
+}
+
+// Validate reports whether cfg's fields are internally consistent. Load
+// calls this after decoding config.toml, so a malformed port range (the
+// only field pair with a relationship to check today) fails loudly at
+// startup instead of producing undefined behavior later when
+// internal/portpool tries to use it.
+func (c Config) Validate() error {
+	if c.PortRangeStart < 0 || c.PortRangeEnd < 0 {
+		return fmt.Errorf("port_range_start and port_range_end must not be negative")
+	}
+	switch {
+	case c.PortRangeStart == 0 && c.PortRangeEnd == 0:
+		// Both unset: "let the OS pick", the documented zero-value
+		// convention. Nothing to validate.
+		return nil
+	case c.PortRangeStart == 0:
+		return fmt.Errorf("port_range_start must be set when port_range_end (%d) is set", c.PortRangeEnd)
+	case c.PortRangeEnd == 0:
+		return fmt.Errorf("port_range_end must be set when port_range_start (%d) is set", c.PortRangeStart)
+	case c.PortRangeStart > c.PortRangeEnd:
+		return fmt.Errorf("port_range_end (%d) must be >= port_range_start (%d)", c.PortRangeEnd, c.PortRangeStart)
+	default:
+		return nil
+	}
 }
 
 // Save writes cfg to ~/.tocli/config.toml.
