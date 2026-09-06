@@ -107,11 +107,11 @@ require (
 	go.opentelemetry.io/otel v1.38.0 // indirect
 	go.opentelemetry.io/otel/metric v1.38.0 // indirect
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
-	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect
 	modernc.org/libc v1.22.3 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
