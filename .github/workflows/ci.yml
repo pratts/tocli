@@ -38,6 +38,19 @@ jobs:
       - name: Test
         run: go test ./... -race -timeout 180s
 
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
   lint:
     name: gofmt / go mod tidy
     runs-on: ubuntu-latest
