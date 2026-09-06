@@ -258,6 +258,12 @@ type RemoveOutcome struct {
 	// -- see RemoveTorrent's doc comment for why nothing is left orphaned
 	// in ~/.tocli even in this case.
 	DataRemoveErr error
+	// ConfigUnreadable is true if config.json itself couldn't be loaded or
+	// parsed at all (e.g. a torn write during spawn, or manual/external
+	// corruption), so RemoveTorrent fell back to deleting
+	// ~/.tocli/torrents/<id> outright instead of the normal logic -- see
+	// removeWithUnreadableConfig.
+	ConfigUnreadable bool
 }
 
 // RemoveTorrent stops id if it's running (reconciling liveness first, the
@@ -273,10 +279,13 @@ type RemoveOutcome struct {
 // so nothing is left orphaned in ~/.tocli either way: at worst, the
 // downloaded files remain on disk needing manual cleanup, which the
 // returned error surfaces clearly.
+//
+// If config.json can't even be loaded/parsed, RemoveTorrent can't reach any
+// of the above -- see removeWithUnreadableConfig for that fallback.
 func RemoveTorrent(id string, withData bool) (RemoveOutcome, error) {
 	tc, err := store.LoadTorrentConfig(id)
 	if err != nil {
-		return RemoveOutcome{}, fmt.Errorf("load torrent %s: %w", id, err)
+		return removeWithUnreadableConfig(id)
 	}
 
 	// Reconcile before deciding whether there's anything to signal: a
@@ -322,17 +331,71 @@ func RemoveTorrent(id string, withData bool) (RemoveOutcome, error) {
 	return outcome, nil
 }
 
+// removeWithUnreadableConfig is RemoveTorrent's fallback for when
+// config.json itself can't be loaded or parsed (e.g. a torn write during
+// spawn, or manual/external corruption). Without a readable config there's
+// no reliable way to know where the actual downloaded data lives, so the
+// "remove from list only" vs. "remove with data" distinction has nothing
+// left to distinguish between -- both collapse into the same action here:
+// delete ~/.tocli/torrents/<id> outright. Any downloaded data elsewhere on
+// disk is left untouched simply because there's no way to find it any
+// more, not as a deliberate policy choice.
+//
+// It also means there's no pid to read for a liveness check or a graceful
+// stop the normal way (store.ReconcileLiveness, process.Terminate). The
+// per-torrent advisory lock file is still readable and lockable without a
+// readable config, though -- it's the same one engine.Run acquires on
+// startup, and per the earlier lock-file hardening work, the more reliable
+// liveness signal anyway (a kernel guarantee, not an inference). So it's
+// what guards this fallback instead: if something still holds it, nothing
+// is deleted.
+func removeWithUnreadableConfig(id string) (RemoveOutcome, error) {
+	outcome := RemoveOutcome{ConfigUnreadable: true}
+
+	lockPath, err := store.LockPath(id)
+	if err != nil {
+		return outcome, err
+	}
+	release, err := process.AcquireLock(lockPath)
+	if err != nil {
+		if errors.Is(err, process.ErrLockHeld) {
+			return outcome, fmt.Errorf("torrent %s still appears to be running; cannot determine its PID from the corrupt config to stop it -- you may need to find and kill the process manually", id)
+		}
+		return outcome, fmt.Errorf("check torrent %s liveness: %w", id, err)
+	}
+	if err := release(); err != nil {
+		return outcome, fmt.Errorf("release lock for torrent %s: %w", id, err)
+	}
+
+	dir, err := store.TorrentDir(id)
+	if err != nil {
+		return outcome, err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return outcome, fmt.Errorf("remove torrent directory: %w", err)
+	}
+	return outcome, nil
+}
+
 // DescribeRemove renders a RemoveTorrent result as a single user-facing
-// message, distinguishing its possible outcomes: a genuine failure (err
-// set, DataRemoveErr not -- e.g. the torrent couldn't be stopped, or the
-// tracking directory itself couldn't be removed), a tracking entry removed
-// despite a data-removal failure (DataRemoveErr set -- nothing orphaned in
-// ~/.tocli, but the files need manual cleanup), and the two success cases.
-// This is the single place that wording lives, called identically by the
-// plain CLI, the standalone remove picker, and the dashboard's inline
-// remove, so the three never drift out of sync.
+// message, distinguishing its possible outcomes: the corrupt-config
+// fallback (ConfigUnreadable set -- see removeWithUnreadableConfig), a
+// genuine failure (err set, DataRemoveErr not -- e.g. the torrent couldn't
+// be stopped, or the tracking directory itself couldn't be removed), a
+// tracking entry removed despite a data-removal failure (DataRemoveErr set
+// -- nothing orphaned in ~/.tocli, but the files need manual cleanup), and
+// the two success cases. This is the single place that wording lives,
+// called identically by the plain CLI, the standalone remove picker, and
+// the dashboard's inline remove, so the three never drift out of sync.
 func DescribeRemove(id string, outcome RemoveOutcome, err error) string {
 	switch {
+	case outcome.ConfigUnreadable && err != nil:
+		// err is already a complete, id-specific sentence (e.g. "torrent
+		// %s still appears to be running; ..."); wrapping it further would
+		// just repeat itself.
+		return err.Error()
+	case outcome.ConfigUnreadable:
+		return fmt.Sprintf("config for torrent %s was unreadable; removed its tracking directory entirely", id)
 	case outcome.DataRemoveErr != nil:
 		return fmt.Sprintf("removed torrent %s tracking entry, but failed to remove downloaded files: %v", id, outcome.DataRemoveErr)
 	case err != nil:
