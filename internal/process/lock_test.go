@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestAcquireLock_ExclusiveAndReleasable(t *testing.T) {
@@ -44,6 +45,35 @@ func TestAcquireLock_ReleaseIsIdempotent(t *testing.T) {
 	}
 	if err := release(); err != nil {
 		t.Fatalf("second release (should be a no-op, not an error): %v", err)
+	}
+}
+
+// TestAcquireLockBlocking_WaitsForRelease confirms the actual difference
+// from AcquireLock: contention doesn't fail immediately, it waits until
+// the current holder releases.
+func TestAcquireLockBlocking_WaitsForRelease(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock")
+
+	release1, err := AcquireLock(path)
+	if err != nil {
+		t.Fatalf("first AcquireLock: %v", err)
+	}
+
+	const holdTime = 200 * time.Millisecond
+	go func() {
+		time.Sleep(holdTime)
+		_ = release1()
+	}()
+
+	start := time.Now()
+	release2, err := AcquireLockBlocking(path)
+	if err != nil {
+		t.Fatalf("AcquireLockBlocking: %v", err)
+	}
+	defer release2()
+
+	if waited := time.Since(start); waited < holdTime {
+		t.Fatalf("AcquireLockBlocking returned after %s, want it to have waited at least %s for the first holder to release", waited, holdTime)
 	}
 }
 

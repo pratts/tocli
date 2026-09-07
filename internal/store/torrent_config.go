@@ -61,6 +61,16 @@ type TorrentConfig struct {
 	// trusted -- it may have been reassigned to an unrelated process.
 	BootID  string    `json:"boot_id"`
 	AddedAt time.Time `json:"added_at"`
+	// PortEphemeral is true only while this torrent is running and its
+	// process fell back to an OS-assigned port because the configured
+	// [PortRangeStart, PortRangeEnd] range was exhausted (see
+	// internal/portpool.Claim) -- meaning it's currently accepting inbound
+	// peer connections on an unpredictable port rather than the reserved
+	// range, which matters to anyone who's port-forwarded that range on
+	// their router. Reset to false whenever the torrent isn't actively
+	// running (paused/completed/etc.), since the port claim -- or lack of
+	// one -- no longer applies once it's released.
+	PortEphemeral bool `json:"port_ephemeral,omitempty"`
 }
 
 func LoadTorrentConfig(id string) (*TorrentConfig, error) {
