@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,36 @@ func TestList_SelfCorrectsCrashedStatus(t *testing.T) {
 	}
 	if got.PID != 0 {
 		t.Fatalf("pid = %d, want 0", got.PID)
+	}
+}
+
+// TestList_SurfacesEphemeralPortFallback confirms a torrent running on an
+// OS-assigned fallback port (store.TorrentConfig.PortEphemeral) is visibly
+// flagged in `list --plain` output, not just recorded silently -- the
+// whole point of persisting this rather than only logging it.
+func TestList_SurfacesEphemeralPortFallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	id := "ephemeral1"
+	if err := store.InitTorrentDir(id); err != nil {
+		t.Fatalf("init torrent dir: %v", err)
+	}
+	tc := &store.TorrentConfig{ID: id, Name: "port-exhausted", Status: store.StatusRunning, PortEphemeral: true}
+	if err := store.SaveTorrentConfig(tc); err != nil {
+		t.Fatalf("save torrent config: %v", err)
+	}
+
+	out := new(bytes.Buffer)
+	root := NewRootCmd("test")
+	root.SetArgs([]string{"list", "--plain"})
+	root.SetOut(out)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("run list: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "ephemeral1") || !strings.Contains(got, "ephemeral port") {
+		t.Fatalf("list output missing an ephemeral-port note for a torrent with PortEphemeral=true:\n%s", got)
 	}
 }
 

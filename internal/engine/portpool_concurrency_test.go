@@ -242,4 +242,14 @@ func TestPortPool_RangeExhaustionFallsBackToEphemeralPort(t *testing.T) {
 	if len(reg.Ports) != 1 || reg.Ports[cfg.PortRangeStart] != id1 {
 		t.Fatalf("expected only %s to hold the single configured port, registry: %+v", id1, reg.Ports)
 	}
+
+	// Not just logged to stderr: this must be visible in normal use
+	// (`list`, the dashboard) too -- see store.TorrentConfig.PortEphemeral.
+	tc2, err := store.LoadTorrentConfig(id2)
+	if err != nil {
+		t.Fatalf("load torrent config for %s: %v", id2, err)
+	}
+	if !tc2.PortEphemeral {
+		t.Fatalf("expected %s's persisted config to record PortEphemeral=true, got %+v", id2, tc2)
+	}
 }

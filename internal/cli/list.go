@@ -47,7 +47,11 @@ type listEntry struct {
 	DownloadRateBps float64 `json:"download_rate_bps"`
 	ActivePeers     int     `json:"active_peers"`
 	TotalPeers      int     `json:"total_peers"`
-	Error           string  `json:"error,omitempty"`
+	// PortEphemeral is true if this torrent is running on an OS-assigned
+	// fallback port because the configured port range was exhausted -- see
+	// store.TorrentConfig.PortEphemeral.
+	PortEphemeral bool   `json:"port_ephemeral,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 func loadListEntries() ([]listEntry, error) {
@@ -66,7 +70,7 @@ func loadListEntries() ([]listEntry, error) {
 		}
 		_ = store.ReconcileLiveness(tc)
 
-		e := listEntry{ID: tc.ID, Name: tc.Name, Status: string(tc.Status)}
+		e := listEntry{ID: tc.ID, Name: tc.Name, Status: string(tc.Status), PortEphemeral: tc.PortEphemeral}
 		if st, err := store.LoadState(id); err == nil {
 			e.Percent = st.Percent
 			e.DownloadRateBps = st.DownloadRateBps
@@ -117,7 +121,14 @@ func runListTable(cmd *cobra.Command) error {
 		percent := fmt.Sprintf("%.1f%%", e.Percent)
 		rate := humanize.Rate(e.DownloadRateBps)
 		peers := fmt.Sprintf("%d/%d", e.ActivePeers, e.TotalPeers)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.ID, e.Name, e.Status, percent, rate, peers)
+		status := e.Status
+		if e.PortEphemeral {
+			// Visible here, not just logged to log.txt: an unreachable
+			// inbound listener silently degrading a running torrent is
+			// exactly the failure mode this needs to surface, not hide.
+			status += " (ephemeral port)"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.ID, e.Name, status, percent, rate, peers)
 	}
 	return w.Flush()
 }

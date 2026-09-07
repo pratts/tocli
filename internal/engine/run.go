@@ -88,6 +88,12 @@ func Run(id string) error {
 	if err != nil {
 		return fmt.Errorf("claim listen port: %w", err)
 	}
+	// Recorded in config.json, not just logged: a warning that only ever
+	// reaches log.txt is exactly the "no visible symptom" failure mode this
+	// whole port-pool fix exists to close. `list`/the dashboard surface
+	// this so it's visible during normal use, not just to someone who
+	// already suspects something's wrong and goes looking in the logs.
+	tc.PortEphemeral = ephemeral
 	switch {
 	case ephemeral:
 		log.Printf("configured port range [%d-%d] exhausted; falling back to an OS-assigned port for this torrent", globalCfg.PortRangeStart, globalCfg.PortRangeEnd)
@@ -174,6 +180,7 @@ func Run(id string) error {
 			writeState()
 			tc.Status = store.StatusCompleted
 			tc.PID = 0
+			tc.PortEphemeral = false // the port claim, if any, is about to be released below
 			if err := store.SaveTorrentConfig(tc); err != nil {
 				return fmt.Errorf("record completed status: %w", err)
 			}
@@ -200,6 +207,7 @@ func Run(id string) error {
 			writeState()
 			tc.Status = store.StatusPaused
 			tc.PID = 0
+			tc.PortEphemeral = false // the port claim, if any, is about to be released below
 			if err := store.SaveTorrentConfig(tc); err != nil {
 				return fmt.Errorf("record paused status: %w", err)
 			}

@@ -23,8 +23,10 @@ func newTable() table.Model {
 // a ragged edge or truncating names unnecessarily on wide terminals.
 func columnsForWidth(width int) []table.Column {
 	const (
-		idW      = 12
-		statusW  = 12
+		idW = 12
+		// Wide enough for "running (ephemeral)" -- see rowsToTable -- not
+		// just the bare status word.
+		statusW  = 20
 		percentW = 8
 		rateW    = 12
 		peersW   = 10
@@ -50,7 +52,13 @@ func rowsToTable(rows []rowData) []table.Row {
 			out[i] = table.Row{r.ID, "error: unreadable config", "-", "-", "-", "-"}
 			continue
 		}
-		out[i] = table.Row{r.ID, r.Name, string(r.Status), r.Percent, r.Rate, r.Peers}
+		status := string(r.Status)
+		if r.PortEphemeral {
+			// Visible here, not just logged to log.txt -- see
+			// store.TorrentConfig.PortEphemeral's doc comment for why.
+			status += " (ephemeral)"
+		}
+		out[i] = table.Row{r.ID, r.Name, status, r.Percent, r.Rate, r.Peers}
 	}
 	return out
 }

@@ -46,6 +46,10 @@ type rowData struct {
 	Rate    string
 	Peers   string
 	Broken  bool // config.json failed to load
+	// PortEphemeral mirrors store.TorrentConfig.PortEphemeral: true if this
+	// torrent is running on an OS-assigned fallback port because the
+	// configured port range was exhausted.
+	PortEphemeral bool
 }
 
 // Model is the dashboard's tea.Model.
@@ -291,6 +295,7 @@ func loadRows() []rowData {
 		rows = append(rows, rowData{
 			ID: tc.ID, Name: tc.Name, Status: tc.Status,
 			Percent: percent, Rate: rate, Peers: peers,
+			PortEphemeral: tc.PortEphemeral,
 		})
 	}
 	return rows
