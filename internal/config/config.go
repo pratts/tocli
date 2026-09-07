@@ -17,7 +17,13 @@ const fileName = "config.toml"
 
 // Config holds the global defaults applied to every torrent unless
 // overridden per-torrent in a later pass. Zero values for the speed limits
-// mean "unlimited"; zero for the port range means "let the OS pick".
+// mean "unlimited". PortRangeStart/PortRangeEnd both zero means "let the OS
+// pick" a port for every torrent, with no coordination between them at all.
+// When set, each concurrently-running torrent claims a distinct,
+// lowest-available port from [PortRangeStart, PortRangeEnd] -- see
+// internal/portpool.Claim -- falling back to an OS-assigned port (recorded
+// and surfaced as such, not just logged -- see
+// store.TorrentConfig.PortEphemeral) once the range is exhausted.
 type Config struct {
 	BaseDownloadDir string `toml:"base_download_dir"`
 	MaxUploadBps    int64  `toml:"max_upload_bps"`
