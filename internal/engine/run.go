@@ -79,6 +79,11 @@ func Run(id string) error {
 
 	clientCfg := torrent.NewDefaultClientConfig()
 	clientCfg.DataDir = tc.SavePath
+	// OS-assigned unless a port is claimed from the pool below. The
+	// library default (42069) would otherwise apply in the ephemeral
+	// fallback and no-range cases, colliding with whichever torrent holds
+	// that port -- the exact collision the pool exists to prevent.
+	clientCfg.ListenPort = 0
 
 	// Claim a distinct port from the configured range so this process's
 	// inbound listener never collides with another concurrently-running
