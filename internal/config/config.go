@@ -45,8 +45,8 @@ func Default() Config {
 		BaseDownloadDir: filepath.Join(home, "Downloads", "torrents"),
 		MaxUploadBps:    0,
 		MaxDownloadBps:  0,
-		PortRangeStart:  42069,
-		PortRangeEnd:    42069,
+		PortRangeStart:  42000,
+		PortRangeEnd:    43000,
 	}
 }
 
